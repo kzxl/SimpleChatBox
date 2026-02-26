@@ -17,6 +17,7 @@ namespace ChatBox.Client.Forms
         private readonly TcpClientService _tcpService;
         private readonly ChatService _chatService;
         private readonly FileTransferService _fileTransferService;
+        private readonly FileReceiveService _fileReceiveService;
         private readonly VideoCallService _videoCallService;
         private readonly MessageHistoryService _historyService;
 
@@ -31,6 +32,9 @@ namespace ChatBox.Client.Forms
         /// <summary>DH key exchange instances per user</summary>
         private readonly Dictionary<string, DiffieHellmanHelper> _dhInstances = new Dictionary<string, DiffieHellmanHelper>();
 
+        /// <summary>File path → link label (để click mở file)</summary>
+        private frmVideoCall _activeVideoCallForm;
+
         public frmChat(TcpClientService tcpService, string userId, string displayName)
         {
             InitializeComponent();
@@ -43,6 +47,7 @@ namespace ChatBox.Client.Forms
             _chatService.CurrentUserId = userId;
 
             _fileTransferService = new FileTransferService(tcpService, _chatService);
+            _fileReceiveService = new FileReceiveService();
             _videoCallService = new VideoCallService(tcpService, _chatService);
             _historyService = new MessageHistoryService();
 
@@ -55,6 +60,9 @@ namespace ChatBox.Client.Forms
 
             // Video call events
             _videoCallService.OnIncomingCall += HandleIncomingCall;
+            _videoCallService.OnCallAccepted += HandleCallAccepted;
+            _videoCallService.OnCallEnded += HandleCallEnded;
+            _videoCallService.OnCallRejected += HandleCallRejected;
 
             // Khi form hiện lên → gửi Heartbeat để server gửi lại UserList
             this.Shown += frmChat_Shown;
@@ -100,7 +108,7 @@ namespace ChatBox.Client.Forms
                     break;
 
                 case PacketType.FileChunk:
-                    // TODO: Accumulate chunks
+                    HandleFileChunk(packet);
                     break;
 
                 case PacketType.FileComplete:
@@ -119,6 +127,9 @@ namespace ChatBox.Client.Forms
 
         private void HandleUserList(Packet packet)
         {
+            // Lưu lại selected user trước khi clear
+            string previousSelectedId = _selectedUserId;
+
             _onlineUsers.Clear();
             lstUsers.Items.Clear();
 
@@ -142,6 +153,40 @@ namespace ChatBox.Client.Forms
             }
 
             lblUsers.Text = $"👥 Online ({_onlineUsers.Count})";
+
+            // Kiểm tra nếu đối tượng đang chat/call đã offline
+            if (!string.IsNullOrEmpty(previousSelectedId) && !_onlineUsers.ContainsKey(previousSelectedId))
+            {
+                // User đang chat đã offline
+                AppendSystem($"⚠️ {_selectedUserName ?? previousSelectedId} đã offline");
+
+                // Nếu đang video call với user này → kết thúc
+                if (_videoCallService.IsInCall && _videoCallService.CurrentCallPartner == previousSelectedId)
+                {
+                    _videoCallService.EndCall();
+                    CloseVideoCallForm();
+                    AppendSystem("📹 Cuộc gọi video đã kết thúc do đối phương offline");
+                }
+
+                _selectedUserId = null;
+                _selectedUserName = null;
+                lblChatWith.Text = "Chọn user để bắt đầu chat";
+            }
+
+            // Restore selection nếu user vẫn online
+            if (!string.IsNullOrEmpty(previousSelectedId) && _onlineUsers.ContainsKey(previousSelectedId))
+            {
+                int idx = 0;
+                foreach (var kvp in _onlineUsers)
+                {
+                    if (kvp.Key == previousSelectedId)
+                    {
+                        lstUsers.SelectedIndex = idx;
+                        break;
+                    }
+                    idx++;
+                }
+            }
         }
 
         private void HandleMessage(Packet packet)
@@ -196,14 +241,64 @@ namespace ChatBox.Client.Forms
         private void HandleFileHeader(Packet packet)
         {
             string fileName = GetJsonField(packet.Data, "FileName");
+            string fileSizeStr = GetJsonField(packet.Data, "FileSize");
+            string totalChunksStr = GetJsonField(packet.Data, "TotalChunks");
+            string transferId = GetJsonField(packet.Data, "TransferId");
             string senderName = GetUserName(packet.SenderId);
-            AppendSystem($"📎 {senderName} đang gửi file: {fileName}");
+
+            long fileSize = 0;
+            long.TryParse(fileSizeStr, out fileSize);
+            int totalChunks = 0;
+            int.TryParse(totalChunksStr, out totalChunks);
+
+            _fileReceiveService.HandleFileHeader(packet.SenderId, senderName, fileName, fileSize, totalChunks, transferId);
+
+            string sizeText = FormatFileSize(fileSize);
+            AppendSystem($"📎 {senderName} đang gửi file: {fileName} ({sizeText})");
+        }
+
+        private void HandleFileChunk(Packet packet)
+        {
+            string transferId = GetJsonField(packet.Data, "TransferId");
+            string chunkIndexStr = GetJsonField(packet.Data, "ChunkIndex");
+            string chunkData = GetJsonField(packet.Data, "ChunkData");
+
+            int chunkIndex = 0;
+            int.TryParse(chunkIndexStr, out chunkIndex);
+
+            _fileReceiveService.HandleFileChunk(transferId, chunkIndex, chunkData);
         }
 
         private void HandleFileComplete(Packet packet)
         {
-            string senderName = GetUserName(packet.SenderId);
-            AppendSystem($"✅ Đã nhận file từ {senderName}");
+            string transferId = GetJsonField(packet.Data, "TransferId");
+            string savedPath = _fileReceiveService.HandleFileComplete(transferId);
+
+            if (savedPath != null)
+            {
+                string fileName = System.IO.Path.GetFileName(savedPath);
+                string senderName = GetUserName(packet.SenderId);
+
+                AppendSystem($"✅ Đã nhận file từ {senderName}: {fileName}");
+
+                // Hỏi user có muốn mở file không
+                var result = MessageBox.Show(
+                    $"Đã nhận file \"{fileName}\" từ {senderName}.\n\nBạn có muốn mở file?",
+                    "File đã nhận", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+
+                if (result == DialogResult.Yes)
+                {
+                    FileReceiveService.OpenFile(savedPath);
+                }
+
+                // Lưu lịch sử
+                _historyService.SaveMessage(packet.SenderId, packet.SenderId, senderName,
+                    $"[File] {fileName}", true);
+            }
+            else
+            {
+                AppendSystem($"❌ Lỗi khi nhận file từ {GetUserName(packet.SenderId)}");
+            }
         }
 
         private void HandleIncomingCall(string callerUserId)
@@ -222,12 +317,49 @@ namespace ChatBox.Client.Forms
             if (result == DialogResult.Yes)
             {
                 _videoCallService.AcceptCall(callerUserId);
-                AppendSystem($"📹 Đang gọi video với {callerName}");
+                // AcceptCall sẽ trigger OnCallAccepted → mở frmVideoCall
             }
             else
             {
                 _videoCallService.RejectCall(callerUserId);
             }
+        }
+
+        private void HandleCallAccepted()
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(HandleCallAccepted));
+                return;
+            }
+
+            string partnerName = GetUserName(_videoCallService.CurrentCallPartner);
+            AppendSystem($"📹 Đang gọi video với {partnerName}");
+            OpenVideoCallForm(partnerName);
+        }
+
+        private void HandleCallRejected(string reason)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<string>(HandleCallRejected), reason);
+                return;
+            }
+
+            AppendSystem($"📹 {reason}");
+            CloseVideoCallForm();
+        }
+
+        private void HandleCallEnded()
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(HandleCallEnded));
+                return;
+            }
+
+            AppendSystem("📹 Cuộc gọi video đã kết thúc");
+            CloseVideoCallForm();
         }
 
         private void HandleDisconnected()
@@ -236,6 +368,13 @@ namespace ChatBox.Client.Forms
             {
                 BeginInvoke(new Action(HandleDisconnected));
                 return;
+            }
+
+            // Kết thúc video call nếu đang gọi
+            if (_videoCallService.IsInCall)
+            {
+                _videoCallService.EndCall();
+                CloseVideoCallForm();
             }
 
             AppendSystem("⚠️ Mất kết nối đến server!");
@@ -311,7 +450,10 @@ namespace ChatBox.Client.Forms
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
                     _fileTransferService.SendFile(_selectedUserId, ofd.FileName);
-                    AppendSystem($"📎 Đang gửi file: {System.IO.Path.GetFileName(ofd.FileName)}");
+                    string fileName = System.IO.Path.GetFileName(ofd.FileName);
+                    AppendSystem($"📎 Đang gửi file: {fileName}");
+                    _historyService.SaveMessage(_selectedUserId, _currentUserId, _currentDisplayName,
+                        $"[File] {fileName}", true);
                 }
             }
         }
@@ -324,6 +466,12 @@ namespace ChatBox.Client.Forms
                 return;
             }
 
+            if (_videoCallService.IsInCall)
+            {
+                MessageBox.Show("Bạn đang trong cuộc gọi video!");
+                return;
+            }
+
             _videoCallService.StartCall(_selectedUserId);
             AppendSystem($"📹 Đang gọi video cho {_selectedUserName}...");
         }
@@ -332,6 +480,13 @@ namespace ChatBox.Client.Forms
         {
             _tcpService.OnPacketReceived -= HandlePacket;
             _tcpService.OnDisconnected -= HandleDisconnected;
+
+            // Kết thúc video call nếu đang gọi
+            if (_videoCallService.IsInCall)
+            {
+                _videoCallService.EndCall();
+            }
+            CloseVideoCallForm();
 
             // Gửi disconnect packet
             var packet = new Packet(PacketType.Disconnect, _currentUserId, null, null);
@@ -342,6 +497,32 @@ namespace ChatBox.Client.Forms
             foreach (var dh in _dhInstances.Values)
             {
                 dh.Dispose();
+            }
+        }
+
+        #endregion
+
+        #region Video Call Helpers
+
+        private void OpenVideoCallForm(string partnerName)
+        {
+            CloseVideoCallForm(); // Đóng form cũ nếu có
+
+            _activeVideoCallForm = new frmVideoCall(_videoCallService);
+            _activeVideoCallForm.Text = $"📹 Video Call - {partnerName}";
+            _activeVideoCallForm.FormClosed += (s, args) =>
+            {
+                _activeVideoCallForm = null;
+            };
+            _activeVideoCallForm.Show(this); // Show as modeless, owner = frmChat
+        }
+
+        private void CloseVideoCallForm()
+        {
+            if (_activeVideoCallForm != null && !_activeVideoCallForm.IsDisposed)
+            {
+                _activeVideoCallForm.Close();
+                _activeVideoCallForm = null;
             }
         }
 
@@ -414,6 +595,14 @@ namespace ChatBox.Client.Forms
         {
             string name;
             return _onlineUsers.TryGetValue(userId, out name) ? name : userId;
+        }
+
+        private string FormatFileSize(long bytes)
+        {
+            if (bytes < 1024) return $"{bytes} B";
+            if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+            if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+            return $"{bytes / (1024.0 * 1024 * 1024):F1} GB";
         }
 
         private string GetJsonField(string json, string field)

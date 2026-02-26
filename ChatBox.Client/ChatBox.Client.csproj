@@ -62,6 +62,7 @@
     <Compile Include="Services\ChatService.cs" />
     <Compile Include="Services\IFileTransferService.cs" />
     <Compile Include="Services\FileTransferService.cs" />
+    <Compile Include="Services\FileReceiveService.cs" />
     <Compile Include="Services\IVideoCallService.cs" />
     <Compile Include="Services\VideoCallService.cs" />
     <Compile Include="Services\IMessageHistoryService.cs" />
