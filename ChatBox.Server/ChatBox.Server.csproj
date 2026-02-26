@@ -53,6 +53,7 @@
     <Compile Include="Models\ConnectedClient.cs" />
     <Compile Include="Models\UserAccount.cs" />
     <Compile Include="Data\UserStore.cs" />
+    <Compile Include="Data\MessageStore.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

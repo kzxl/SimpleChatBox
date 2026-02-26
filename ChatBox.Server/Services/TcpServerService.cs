@@ -23,6 +23,7 @@ namespace ChatBox.Server.Services
         private readonly ConcurrentDictionary<string, ConnectedClient> _clients;
         private readonly AuthService _authService;
         private readonly MessageRouter _messageRouter;
+        private readonly MessageStore _messageStore;
         private int _connectionCounter;
 
         public bool IsRunning { get; private set; }
@@ -36,6 +37,7 @@ namespace ChatBox.Server.Services
             _clients = new ConcurrentDictionary<string, ConnectedClient>();
             _authService = new AuthService(userStore);
             _messageRouter = new MessageRouter(_clients, msg => OnLog?.Invoke(msg));
+            _messageStore = new MessageStore();
         }
 
         /// <summary>
@@ -181,8 +183,13 @@ namespace ChatBox.Server.Services
                 case PacketType.VideoFrame:
                 case PacketType.AudioFrame:
                 case PacketType.GroupMessage:
-                    // Forward đến receiver
+                    // Forward đến receiver + lưu lịch sử trên server
                     HandleForward(client, packet);
+                    SaveMessageToStore(client, packet);
+                    break;
+
+                case PacketType.ChatHistoryRequest:
+                    HandleChatHistoryRequest(connectionId, client, packet);
                     break;
 
                 case PacketType.Heartbeat:
@@ -350,6 +357,42 @@ namespace ChatBox.Server.Services
             idx += search.Length;
             int end = json.IndexOf('"', idx);
             return end < 0 ? null : json.Substring(idx, end - idx);
+        }
+
+        /// <summary>
+        /// Lưu tin nhắn vào MessageStore (chỉ Message và GroupMessage)
+        /// </summary>
+        private void SaveMessageToStore(ConnectedClient sender, Packet packet)
+        {
+            if (packet.Type == PacketType.Message || packet.Type == PacketType.GroupMessage)
+            {
+                string content = GetJsonField(packet.Data, "Content");
+                if (string.IsNullOrEmpty(content)) return;
+
+                string receiverId = packet.Type == PacketType.GroupMessage ? "__group__" : packet.ReceiverId;
+                _messageStore.SaveMessage(packet.SenderId, receiverId, sender.DisplayName ?? packet.SenderId, content, false);
+            }
+        }
+
+        /// <summary>
+        /// Client yêu cầu lịch sử chat → server trả về ChatHistoryResponse
+        /// Data format: ReceiverId = partner/group, Data = max count (optional)
+        /// </summary>
+        private void HandleChatHistoryRequest(string connectionId, ConnectedClient client, Packet packet)
+        {
+            if (!client.IsAuthenticated) return;
+
+            string partnerId = packet.ReceiverId ?? "__group__";
+            int maxCount = 50;
+
+            var history = _messageStore.GetHistory(client.UserId, partnerId, maxCount);
+            string json = _messageStore.SerializeHistory(history);
+
+            var response = new Packet(PacketType.ChatHistoryResponse, "SERVER", client.UserId, 
+                string.Format("{{\"PartnerId\":\"{0}\",\"Messages\":{1}}}", partnerId, json));
+
+            PacketSerializer.SendPacket(client.Stream, response);
+            Log($"Gửi {history.Count} tin nhắn lịch sử cho {client.DisplayName} (partner: {partnerId})");
         }
     }
 }

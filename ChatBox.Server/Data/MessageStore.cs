@@ -1,0 +1,224 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+namespace ChatBox.Server.Data
+{
+    /// <summary>
+    /// Lưu trữ lịch sử tin nhắn trên server.
+    /// Mỗi conversation (userId1_userId2) lưu vào 1 file JSON.
+    /// Group chat lưu riêng file __group__.json.
+    /// </summary>
+    public class MessageStore
+    {
+        private readonly string _dataDir;
+        private readonly object _lock = new object();
+
+        public MessageStore()
+        {
+            _dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ChatData");
+            if (!Directory.Exists(_dataDir))
+                Directory.CreateDirectory(_dataDir);
+        }
+
+        /// <summary>
+        /// Lưu 1 tin nhắn
+        /// </summary>
+        public void SaveMessage(string senderId, string receiverId, string senderName, string content, bool isFile)
+        {
+            var record = new ChatRecord
+            {
+                SenderId = senderId,
+                SenderName = senderName,
+                Content = content,
+                IsFile = isFile,
+                Timestamp = DateTime.UtcNow
+            };
+
+            string key = GetConversationKey(senderId, receiverId);
+            string filePath = Path.Combine(_dataDir, key + ".json");
+
+            lock (_lock)
+            {
+                var records = LoadRecords(filePath);
+                records.Add(record);
+
+                // Giới hạn 500 tin nhắn gần nhất per conversation
+                if (records.Count > 500)
+                    records.RemoveRange(0, records.Count - 500);
+
+                SaveRecords(filePath, records);
+            }
+        }
+
+        /// <summary>
+        /// Lấy lịch sử chat giữa 2 user (hoặc group)
+        /// </summary>
+        public List<ChatRecord> GetHistory(string userId1, string userId2, int maxCount = 50)
+        {
+            string key = GetConversationKey(userId1, userId2);
+            string filePath = Path.Combine(_dataDir, key + ".json");
+
+            lock (_lock)
+            {
+                var records = LoadRecords(filePath);
+                int skip = Math.Max(0, records.Count - maxCount);
+                return records.Skip(skip).ToList();
+            }
+        }
+
+        /// <summary>
+        /// Serialize lịch sử thành JSON string để gửi cho client
+        /// </summary>
+        public string SerializeHistory(List<ChatRecord> records)
+        {
+            if (records == null || records.Count == 0) return "[]";
+
+            var sb = new StringBuilder();
+            sb.Append("[");
+            for (int i = 0; i < records.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append("{");
+                sb.AppendFormat("\"SenderId\":\"{0}\",", EscapeJson(records[i].SenderId));
+                sb.AppendFormat("\"SenderName\":\"{0}\",", EscapeJson(records[i].SenderName));
+                sb.AppendFormat("\"Content\":\"{0}\",", EscapeJson(records[i].Content));
+                sb.AppendFormat("\"IsFile\":{0},", records[i].IsFile ? "true" : "false");
+                sb.AppendFormat("\"Timestamp\":\"{0}\"", records[i].Timestamp.ToString("o"));
+                sb.Append("}");
+            }
+            sb.Append("]");
+            return sb.ToString();
+        }
+
+        private string GetConversationKey(string userId1, string userId2)
+        {
+            if (userId2 == null || userId2 == "__group__")
+                return "__group__";
+
+            // Sort để conversation key luôn giống nhau bất kể ai gửi trước
+            var ids = new[] { userId1, userId2 };
+            Array.Sort(ids, StringComparer.OrdinalIgnoreCase);
+            return ids[0] + "_" + ids[1];
+        }
+
+        #region File I/O (simple JSON manual serialization)
+
+        private List<ChatRecord> LoadRecords(string filePath)
+        {
+            if (!File.Exists(filePath))
+                return new List<ChatRecord>();
+
+            try
+            {
+                string json = File.ReadAllText(filePath, Encoding.UTF8);
+                return ParseRecords(json);
+            }
+            catch
+            {
+                return new List<ChatRecord>();
+            }
+        }
+
+        private void SaveRecords(string filePath, List<ChatRecord> records)
+        {
+            string json = SerializeHistory(records);
+            File.WriteAllText(filePath, json, Encoding.UTF8);
+        }
+
+        private List<ChatRecord> ParseRecords(string json)
+        {
+            var list = new List<ChatRecord>();
+            if (string.IsNullOrEmpty(json) || json == "[]") return list;
+
+            // Simple JSON array parsing
+            int i = 0;
+            while (i < json.Length)
+            {
+                int objStart = json.IndexOf('{', i);
+                if (objStart < 0) break;
+
+                int objEnd = json.IndexOf('}', objStart);
+                if (objEnd < 0) break;
+
+                string obj = json.Substring(objStart, objEnd - objStart + 1);
+                var record = new ChatRecord
+                {
+                    SenderId = GetField(obj, "SenderId"),
+                    SenderName = GetField(obj, "SenderName"),
+                    Content = GetField(obj, "Content"),
+                    IsFile = GetField(obj, "IsFile") == "true",
+                };
+
+                string ts = GetField(obj, "Timestamp");
+                DateTime dt;
+                if (DateTime.TryParse(ts, out dt))
+                    record.Timestamp = dt;
+
+                list.Add(record);
+                i = objEnd + 1;
+            }
+            return list;
+        }
+
+        private string GetField(string json, string field)
+        {
+            var search = "\"" + field + "\":";
+            int idx = json.IndexOf(search, StringComparison.Ordinal);
+            if (idx < 0) return null;
+            idx += search.Length;
+            while (idx < json.Length && json[idx] == ' ') idx++;
+            if (idx >= json.Length) return null;
+
+            if (json[idx] == '"')
+            {
+                idx++;
+                var sb = new StringBuilder();
+                bool escaped = false;
+                while (idx < json.Length)
+                {
+                    char c = json[idx];
+                    if (escaped) { sb.Append(c); escaped = false; }
+                    else if (c == '\\') { escaped = true; }
+                    else if (c == '"') { break; }
+                    else { sb.Append(c); }
+                    idx++;
+                }
+                return sb.ToString();
+            }
+            else
+            {
+                var sb = new StringBuilder();
+                while (idx < json.Length && json[idx] != ',' && json[idx] != '}')
+                {
+                    sb.Append(json[idx]);
+                    idx++;
+                }
+                return sb.ToString().Trim();
+            }
+        }
+
+        private string EscapeJson(string s)
+        {
+            if (s == null) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "");
+        }
+
+        #endregion
+    }
+
+    /// <summary>
+    /// 1 bản ghi tin nhắn
+    /// </summary>
+    public class ChatRecord
+    {
+        public string SenderId { get; set; }
+        public string SenderName { get; set; }
+        public string Content { get; set; }
+        public bool IsFile { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+}

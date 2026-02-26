@@ -37,6 +37,8 @@ namespace ChatBox.Shared.Protocol
         UserList = 50,
         Disconnect = 51,
         Heartbeat = 52,
+        ChatHistoryRequest = 53,
+        ChatHistoryResponse = 54,
         Error = 99
     }
 }

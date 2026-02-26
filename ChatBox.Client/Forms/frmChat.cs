@@ -154,6 +154,10 @@ namespace ChatBox.Client.Forms
                 case PacketType.GroupMessage:
                     HandleGroupMessage(packet);
                     break;
+
+                case PacketType.ChatHistoryResponse:
+                    HandleChatHistoryResponse(packet);
+                    break;
             }
         }
 
@@ -363,6 +367,71 @@ namespace ChatBox.Client.Forms
             _historyService.SaveMessage("__group__", packet.SenderId, senderName, content, false);
         }
 
+        private void HandleChatHistoryResponse(Packet packet)
+        {
+            // Parse response: {"PartnerId":"xxx","Messages":[...]}
+            string partnerId = GetJsonField(packet.Data, "PartnerId");
+            
+            // Clear "Loading..." text
+            rtbChat.Clear();
+
+            // Parse Messages array - tìm mảng JSON
+            int msgStart = packet.Data.IndexOf("\"Messages\":", StringComparison.Ordinal);
+            if (msgStart < 0) return;
+            msgStart += "\"Messages\":".Length;
+
+            string messagesJson = packet.Data.Substring(msgStart).TrimEnd('}');
+            if (messagesJson == "[]") 
+            {
+                AppendSystem("Chưa có tin nhắn nào");
+                return;
+            }
+
+            // Parse từng message object
+            bool isGroup = partnerId == "__group__";
+            int i = 0;
+            while (i < messagesJson.Length)
+            {
+                int objStart = messagesJson.IndexOf('{', i);
+                if (objStart < 0) break;
+
+                int objEnd = FindMatchingBrace(messagesJson, objStart);
+                if (objEnd < 0) break;
+
+                string obj = messagesJson.Substring(objStart, objEnd - objStart + 1);
+                string senderId = GetJsonField(obj, "SenderId");
+                string senderName2 = GetJsonField(obj, "SenderName");
+                string content2 = GetJsonField(obj, "Content");
+
+                bool isMine = senderId == _currentUserId;
+                var color = isMine ? Color.LimeGreen : (isGroup ? Color.FromArgb(255, 180, 100) : Color.FromArgb(100, 200, 255));
+                var name = isMine ? _currentDisplayName : senderName2;
+                if (isGroup && !isMine) name = $"[Nhóm] {name}";
+
+                AppendChat(name, content2, color);
+                i = objEnd + 1;
+            }
+        }
+
+        /// <summary>Tìm dấu } đóng tương ứng, bỏ qua {} con bên trong string</summary>
+        private int FindMatchingBrace(string s, int openPos)
+        {
+            int depth = 0;
+            bool inString = false;
+            bool escaped = false;
+            for (int i = openPos; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = true; continue; }
+                if (c == '"') { inString = !inString; continue; }
+                if (inString) continue;
+                if (c == '{') depth++;
+                if (c == '}') { depth--; if (depth == 0) return i; }
+            }
+            return -1;
+        }
+
         private void HandleIncomingCall(string callerUserId)
         {
             if (InvokeRequired)
@@ -472,16 +541,11 @@ namespace ChatBox.Client.Forms
                     _unreadCounts.Remove(kvp.Key);
                     RefreshUserListBadges();
 
-                    // Load lịch sử chat
+                    // Load lịch sử chat từ server
                     rtbChat.Clear();
-                    var history = _historyService.GetHistory(_selectedUserId);
-                    foreach (var msg in history)
-                    {
-                        bool isMine = msg.SenderId == _currentUserId;
-                        var color = isMine ? Color.LimeGreen : Color.FromArgb(100, 200, 255);
-                        var name = isMine ? _currentDisplayName : msg.SenderName;
-                        AppendChat(name, msg.Content, color);
-                    }
+                    AppendSystem("Loading...");
+                    var histReq = new Packet(PacketType.ChatHistoryRequest, _currentUserId, _selectedUserId, null);
+                    _tcpService.SendPacket(histReq);
 
                     // Khởi tạo DH key exchange nếu chưa có
                     if (!_chatService.HasSharedKey(_selectedUserId))
@@ -578,16 +642,11 @@ namespace ChatBox.Client.Forms
                 btnGroupChat.BackColor = Color.FromArgb(200, 100, 50);
                 btnGroupChat.Text = "📢 Đang chat nhóm";
 
-                // Load lịch sử group
+                // Load lịch sử group từ server
                 rtbChat.Clear();
-                var history = _historyService.GetHistory("__group__");
-                foreach (var msg in history)
-                {
-                    bool isMine = msg.SenderId == _currentUserId;
-                    var color = isMine ? Color.LimeGreen : Color.FromArgb(255, 180, 100);
-                    var name = isMine ? _currentDisplayName : msg.SenderName;
-                    AppendChat(name, msg.Content, color);
-                }
+                AppendSystem("Loading...");
+                var histReq = new Packet(PacketType.ChatHistoryRequest, _currentUserId, "__group__", null);
+                _tcpService.SendPacket(histReq);
             }
             else
             {
