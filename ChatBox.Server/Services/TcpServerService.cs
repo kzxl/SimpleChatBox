@@ -168,6 +168,7 @@ namespace ChatBox.Server.Services
                     break;
 
                 case PacketType.Message:
+                case PacketType.TypingIndicator:
                 case PacketType.FileHeader:
                 case PacketType.FileChunk:
                 case PacketType.FileComplete:
@@ -179,6 +180,7 @@ namespace ChatBox.Server.Services
                 case PacketType.VideoCallEnd:
                 case PacketType.VideoFrame:
                 case PacketType.AudioFrame:
+                case PacketType.GroupMessage:
                     // Forward đến receiver
                     HandleForward(client, packet);
                     break;

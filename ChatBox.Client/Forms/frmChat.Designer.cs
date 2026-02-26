@@ -21,14 +21,17 @@ namespace ChatBox.Client.Forms
             this.lstUsers = new System.Windows.Forms.ListBox();
             this.lblUsers = new System.Windows.Forms.Label();
             this.pnlChatBottom = new System.Windows.Forms.Panel();
+            this.btnEmoji = new System.Windows.Forms.Button();
             this.btnSendFile = new System.Windows.Forms.Button();
             this.btnVideoCall = new System.Windows.Forms.Button();
             this.btnSend = new System.Windows.Forms.Button();
             this.txtMessage = new System.Windows.Forms.TextBox();
             this.rtbChat = new System.Windows.Forms.RichTextBox();
             this.lblChatWith = new System.Windows.Forms.Label();
+            this.lblTyping = new System.Windows.Forms.Label();
             this.pnlTopBar = new System.Windows.Forms.Panel();
             this.lblCurrentUser = new System.Windows.Forms.Label();
+            this.btnGroupChat = new System.Windows.Forms.Button();
             ((System.ComponentModel.ISupportInitialize)(this.splitMain)).BeginInit();
             this.splitMain.Panel1.SuspendLayout();
             this.splitMain.Panel2.SuspendLayout();
@@ -70,6 +73,7 @@ namespace ChatBox.Client.Forms
             // 
             this.splitMain.Panel1.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(30)))), ((int)(((byte)(30)))), ((int)(((byte)(35)))));
             this.splitMain.Panel1.Controls.Add(this.lstUsers);
+            this.splitMain.Panel1.Controls.Add(this.btnGroupChat);
             this.splitMain.Panel1.Controls.Add(this.lblUsers);
             this.splitMain.Panel1.Padding = new System.Windows.Forms.Padding(5);
             // 
@@ -78,6 +82,7 @@ namespace ChatBox.Client.Forms
             this.splitMain.Panel2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(25)))), ((int)(((byte)(25)))), ((int)(((byte)(30)))));
             this.splitMain.Panel2.Controls.Add(this.rtbChat);
             this.splitMain.Panel2.Controls.Add(this.lblChatWith);
+            this.splitMain.Panel2.Controls.Add(this.lblTyping);
             this.splitMain.Panel2.Controls.Add(this.pnlChatBottom);
             this.splitMain.Size = new System.Drawing.Size(900, 515);
             this.splitMain.SplitterDistance = 200;
@@ -113,6 +118,7 @@ namespace ChatBox.Client.Forms
             // 
             this.pnlChatBottom.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(40)))), ((int)(((byte)(40)))), ((int)(((byte)(45)))));
             this.pnlChatBottom.Controls.Add(this.txtMessage);
+            this.pnlChatBottom.Controls.Add(this.btnEmoji);
             this.pnlChatBottom.Controls.Add(this.btnSend);
             this.pnlChatBottom.Controls.Add(this.btnSendFile);
             this.pnlChatBottom.Controls.Add(this.btnVideoCall);
@@ -208,6 +214,50 @@ namespace ChatBox.Client.Forms
             this.lblChatWith.TabIndex = 1;
             this.lblChatWith.Text = "Chọn user để bắt đầu chat";
             // 
+            // btnEmoji
+            // 
+            this.btnEmoji.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(55)))), ((int)(((byte)(55)))), ((int)(((byte)(60)))));
+            this.btnEmoji.Dock = System.Windows.Forms.DockStyle.Right;
+            this.btnEmoji.FlatAppearance.BorderSize = 0;
+            this.btnEmoji.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.btnEmoji.Font = new System.Drawing.Font("Segoe UI Emoji", 12F);
+            this.btnEmoji.ForeColor = System.Drawing.Color.White;
+            this.btnEmoji.Location = new System.Drawing.Point(488, 8);
+            this.btnEmoji.Name = "btnEmoji";
+            this.btnEmoji.Size = new System.Drawing.Size(40, 34);
+            this.btnEmoji.TabIndex = 4;
+            this.btnEmoji.Text = "😀";
+            this.btnEmoji.UseVisualStyleBackColor = false;
+            this.btnEmoji.Click += new System.EventHandler(this.btnEmoji_Click);
+            // 
+            // lblTyping
+            // 
+            this.lblTyping.Dock = System.Windows.Forms.DockStyle.Bottom;
+            this.lblTyping.Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Italic);
+            this.lblTyping.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(120)))), ((int)(((byte)(120)))), ((int)(((byte)(120)))));
+            this.lblTyping.Location = new System.Drawing.Point(0, 450);
+            this.lblTyping.Name = "lblTyping";
+            this.lblTyping.Padding = new System.Windows.Forms.Padding(8, 0, 0, 0);
+            this.lblTyping.Size = new System.Drawing.Size(696, 15);
+            this.lblTyping.TabIndex = 5;
+            this.lblTyping.Text = "";
+            // 
+            // btnGroupChat
+            // 
+            this.btnGroupChat.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(60)))), ((int)(((byte)(100)))), ((int)(((byte)(160)))));
+            this.btnGroupChat.Dock = System.Windows.Forms.DockStyle.Top;
+            this.btnGroupChat.FlatAppearance.BorderSize = 0;
+            this.btnGroupChat.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.btnGroupChat.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold);
+            this.btnGroupChat.ForeColor = System.Drawing.Color.White;
+            this.btnGroupChat.Location = new System.Drawing.Point(5, 30);
+            this.btnGroupChat.Name = "btnGroupChat";
+            this.btnGroupChat.Size = new System.Drawing.Size(190, 28);
+            this.btnGroupChat.TabIndex = 5;
+            this.btnGroupChat.Text = "📢 Chat nhóm";
+            this.btnGroupChat.UseVisualStyleBackColor = false;
+            this.btnGroupChat.Click += new System.EventHandler(this.btnGroupChat_Click);
+            //
             // frmChat
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
@@ -244,7 +294,10 @@ namespace ChatBox.Client.Forms
         private System.Windows.Forms.Button btnVideoCall;
         private System.Windows.Forms.RichTextBox rtbChat;
         private System.Windows.Forms.Label lblChatWith;
+        private System.Windows.Forms.Label lblTyping;
         private System.Windows.Forms.Panel pnlTopBar;
+        private System.Windows.Forms.Button btnEmoji;
+        private System.Windows.Forms.Button btnGroupChat;
         private System.Windows.Forms.Label lblCurrentUser;
     }
 }

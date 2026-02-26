@@ -13,6 +13,8 @@ namespace ChatBox.Shared.Protocol
 
         // === Messaging ===
         Message = 10,
+        GroupMessage = 11,
+        TypingIndicator = 12,
 
         // === File Transfer ===
         FileHeader = 20,

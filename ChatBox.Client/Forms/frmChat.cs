@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Media;
 using System.Text;
 using System.Windows.Forms;
 using ChatBox.Client.Services;
@@ -32,8 +33,19 @@ namespace ChatBox.Client.Forms
         /// <summary>DH key exchange instances per user</summary>
         private readonly Dictionary<string, DiffieHellmanHelper> _dhInstances = new Dictionary<string, DiffieHellmanHelper>();
 
-        /// <summary>File path → link label (để click mở file)</summary>
         private frmVideoCall _activeVideoCallForm;
+        private Timer _typingSendTimer;
+        private Timer _typingDisplayTimer;
+        private bool _isGroupChatMode;
+        private readonly Dictionary<string, int> _unreadCounts = new Dictionary<string, int>();
+
+        /// <summary>Emoji phổ biến</summary>
+        private static readonly string[] CommonEmojis = new[]
+        {
+            "😀", "😂", "🥰", "😍", "😎", "🤔", "😢", "😡",
+            "👍", "👎", "👏", "🙏", "💪", "❤️", "🔥", "✨",
+            "🎉", "😊", "😘", "🤣", "😭", "🥺", "👋", "🙌"
+        };
 
         public frmChat(TcpClientService tcpService, string userId, string displayName)
         {
@@ -63,6 +75,18 @@ namespace ChatBox.Client.Forms
             _videoCallService.OnCallAccepted += HandleCallAccepted;
             _videoCallService.OnCallEnded += HandleCallEnded;
             _videoCallService.OnCallRejected += HandleCallRejected;
+
+            // Typing indicator timer: gửi mỗi 2s khi đang gõ
+            _typingSendTimer = new Timer { Interval = 2000 };
+            _typingSendTimer.Tick += (s, args) => _typingSendTimer.Stop();
+
+            // Timer ẩn typing indicator sau 3s
+            _typingDisplayTimer = new Timer { Interval = 3000 };
+            _typingDisplayTimer.Tick += (s, args) =>
+            {
+                _typingDisplayTimer.Stop();
+                lblTyping.Text = "";
+            };
 
             // Khi form hiện lên → gửi Heartbeat để server gửi lại UserList
             this.Shown += frmChat_Shown;
@@ -121,6 +145,14 @@ namespace ChatBox.Client.Forms
                 case PacketType.VideoCallEnd:
                 case PacketType.VideoFrame:
                     _videoCallService.HandleVideoSignal(packet);
+                    break;
+
+                case PacketType.TypingIndicator:
+                    HandleTypingIndicator(packet);
+                    break;
+
+                case PacketType.GroupMessage:
+                    HandleGroupMessage(packet);
                     break;
             }
         }
@@ -202,6 +234,16 @@ namespace ChatBox.Client.Forms
                 senderName = _onlineUsers[packet.SenderId];
 
             AppendChat(senderName, displayContent, Color.FromArgb(100, 200, 255));
+            PlayNotificationSound();
+
+            // Đếm unread nếu không phải user đang chọn
+            if (packet.SenderId != _selectedUserId)
+            {
+                int count;
+                _unreadCounts.TryGetValue(packet.SenderId, out count);
+                _unreadCounts[packet.SenderId] = count + 1;
+                RefreshUserListBadges();
+            }
 
             // Lưu lịch sử
             _historyService.SaveMessage(packet.SenderId, packet.SenderId, senderName, displayContent, false);
@@ -301,6 +343,26 @@ namespace ChatBox.Client.Forms
             }
         }
 
+        private void HandleTypingIndicator(Packet packet)
+        {
+            string senderName = GetUserName(packet.SenderId);
+            lblTyping.Text = $"✏️ {senderName} đang nhập...";
+            _typingDisplayTimer.Stop();
+            _typingDisplayTimer.Start(); // Ẩn sau 3s
+        }
+
+        private void HandleGroupMessage(Packet packet)
+        {
+            string content = GetJsonField(packet.Data, "Content");
+            string senderName = GetUserName(packet.SenderId);
+
+            AppendChat($"[Nhóm] {senderName}", content, Color.FromArgb(255, 180, 100));
+            PlayNotificationSound();
+
+            // Lưu vào lịch sử group
+            _historyService.SaveMessage("__group__", packet.SenderId, senderName, content, false);
+        }
+
         private void HandleIncomingCall(string callerUserId)
         {
             if (InvokeRequired)
@@ -392,11 +454,23 @@ namespace ChatBox.Client.Forms
             int idx = 0;
             foreach (var kvp in _onlineUsers)
             {
-                if (idx == lstUsers.SelectedIndex)
+             if (idx == lstUsers.SelectedIndex)
                 {
+                    // Thoát group chat mode khi chọn user cụ thể
+                    if (_isGroupChatMode)
+                    {
+                        _isGroupChatMode = false;
+                        btnGroupChat.BackColor = Color.FromArgb(60, 100, 160);
+                        btnGroupChat.Text = "📢 Chat nhóm";
+                    }
+
                     _selectedUserId = kvp.Key;
                     _selectedUserName = kvp.Value;
                     lblChatWith.Text = $"💬 Chat với {kvp.Value}";
+
+                    // Clear unread
+                    _unreadCounts.Remove(kvp.Key);
+                    RefreshUserListBadges();
 
                     // Load lịch sử chat
                     rtbChat.Clear();
@@ -432,6 +506,95 @@ namespace ChatBox.Client.Forms
             {
                 e.SuppressKeyPress = true;
                 SendMessage();
+            }
+            else if (!string.IsNullOrEmpty(_selectedUserId) && !_typingSendTimer.Enabled)
+            {
+                // Gửi typing indicator (throttle 2s)
+                _typingSendTimer.Start();
+                var typingPacket = new Packet(PacketType.TypingIndicator, _currentUserId, _selectedUserId, null);
+                _tcpService.SendPacket(typingPacket);
+            }
+        }
+
+        private void btnEmoji_Click(object sender, EventArgs e)
+        {
+            // Tạo popup menu emoji
+            var menu = new ContextMenuStrip();
+            menu.BackColor = Color.FromArgb(45, 45, 50);
+            menu.ForeColor = Color.White;
+            menu.ShowImageMargin = false;
+
+            // Hiển thị emoji 6 cái mỗi hàng
+            var flowPanel = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                MaximumSize = new Size(240, 200),
+                BackColor = Color.FromArgb(45, 45, 50),
+                Padding = new Padding(5)
+            };
+
+            foreach (var emoji in CommonEmojis)
+            {
+                var btn = new Button
+                {
+                    Text = emoji,
+                    Font = new Font("Segoe UI Emoji", 14F),
+                    Size = new Size(36, 36),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(55, 55, 60),
+                    ForeColor = Color.White,
+                    Margin = new Padding(2),
+                    Cursor = Cursors.Hand
+                };
+                btn.FlatAppearance.BorderSize = 0;
+                btn.Click += (s, args) =>
+                {
+                    txtMessage.Text += ((Button)s).Text;
+                    txtMessage.SelectionStart = txtMessage.Text.Length;
+                    txtMessage.Focus();
+                    menu.Close();
+                };
+                flowPanel.Controls.Add(btn);
+            }
+
+            var host = new ToolStripControlHost(flowPanel)
+            {
+                AutoSize = true
+            };
+            menu.Items.Add(host);
+            menu.Show(btnEmoji, new Point(0, -210));
+        }
+
+        private void btnGroupChat_Click(object sender, EventArgs e)
+        {
+            _isGroupChatMode = !_isGroupChatMode;
+
+            if (_isGroupChatMode)
+            {
+                lstUsers.ClearSelected();
+                _selectedUserId = null;
+                _selectedUserName = null;
+                lblChatWith.Text = "📢 Chat nhóm (tất cả user online)";
+                btnGroupChat.BackColor = Color.FromArgb(200, 100, 50);
+                btnGroupChat.Text = "📢 Đang chat nhóm";
+
+                // Load lịch sử group
+                rtbChat.Clear();
+                var history = _historyService.GetHistory("__group__");
+                foreach (var msg in history)
+                {
+                    bool isMine = msg.SenderId == _currentUserId;
+                    var color = isMine ? Color.LimeGreen : Color.FromArgb(255, 180, 100);
+                    var name = isMine ? _currentDisplayName : msg.SenderName;
+                    AppendChat(name, msg.Content, color);
+                }
+            }
+            else
+            {
+                lblChatWith.Text = "Chọn user để bắt đầu chat";
+                btnGroupChat.BackColor = Color.FromArgb(60, 100, 160);
+                btnGroupChat.Text = "📢 Chat nhóm";
+                rtbChat.Clear();
             }
         }
 
@@ -532,17 +695,32 @@ namespace ChatBox.Client.Forms
 
         private void SendMessage()
         {
-            if (string.IsNullOrWhiteSpace(txtMessage.Text) || string.IsNullOrEmpty(_selectedUserId))
+            if (string.IsNullOrWhiteSpace(txtMessage.Text))
                 return;
 
             string message = txtMessage.Text.Trim();
-            _chatService.SendMessage(_selectedUserId, message);
 
-            // Hiển thị tin nhắn của mình
-            AppendChat(_currentDisplayName, message, Color.LimeGreen);
+            if (_isGroupChatMode)
+            {
+                // Group chat: broadcast tới tất cả user online
+                var data = string.Format("{{\"Content\":\"{0}\"}}", EscapeJsonString(message));
+                foreach (var kvp in _onlineUsers)
+                {
+                    var packet = new Packet(PacketType.GroupMessage, _currentUserId, kvp.Key, data);
+                    _tcpService.SendPacket(packet);
+                }
 
-            // Lưu lịch sử
-            _historyService.SaveMessage(_selectedUserId, _currentUserId, _currentDisplayName, message, false);
+                AppendChat(_currentDisplayName, message, Color.LimeGreen);
+                _historyService.SaveMessage("__group__", _currentUserId, _currentDisplayName, message, false);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(_selectedUserId)) return;
+
+                _chatService.SendMessage(_selectedUserId, message);
+                AppendChat(_currentDisplayName, message, Color.LimeGreen);
+                _historyService.SaveMessage(_selectedUserId, _currentUserId, _currentDisplayName, message, false);
+            }
 
             txtMessage.Clear();
             txtMessage.Focus();
@@ -644,6 +822,37 @@ namespace ChatBox.Client.Forms
                 }
                 return sb.ToString().Trim();
             }
+        }
+
+        #endregion
+
+        #region Badge & Sound
+
+        private void RefreshUserListBadges()
+        {
+            lstUsers.Items.Clear();
+            foreach (var kvp in _onlineUsers)
+            {
+                int unread;
+                _unreadCounts.TryGetValue(kvp.Key, out unread);
+                string badge = unread > 0 ? $" ({unread})" : "";
+                lstUsers.Items.Add($"🟢 {kvp.Value}{badge}");
+            }
+        }
+
+        private void PlayNotificationSound()
+        {
+            try
+            {
+                SystemSounds.Asterisk.Play();
+            }
+            catch { }
+        }
+
+        private string EscapeJsonString(string s)
+        {
+            if (s == null) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "");
         }
 
         #endregion
