@@ -183,6 +183,14 @@ namespace ChatBox.Server.Services
                     HandleForward(client, packet);
                     break;
 
+                case PacketType.Heartbeat:
+                    // Client yêu cầu cập nhật danh sách user
+                    if (client.IsAuthenticated)
+                    {
+                        _messageRouter.BroadcastUserList();
+                    }
+                    break;
+
                 case PacketType.Disconnect:
                     DisconnectClient(connectionId);
                     break;
@@ -240,8 +248,12 @@ namespace ChatBox.Server.Services
 
             if (response.Success)
             {
-                // Broadcast user list update
-                _messageRouter.BroadcastUserList();
+                // Delay nhỏ để client có thời gian mở frmChat và subscribe events
+                Task.Run(async () =>
+                {
+                    await Task.Delay(500);
+                    _messageRouter.BroadcastUserList();
+                });
                 OnClientListChanged?.Invoke();
             }
         }

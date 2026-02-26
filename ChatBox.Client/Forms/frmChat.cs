@@ -55,6 +55,16 @@ namespace ChatBox.Client.Forms
 
             // Video call events
             _videoCallService.OnIncomingCall += HandleIncomingCall;
+
+            // Khi form hiện lên → gửi Heartbeat để server gửi lại UserList
+            this.Shown += frmChat_Shown;
+        }
+
+        private void frmChat_Shown(object sender, EventArgs e)
+        {
+            // Gửi Heartbeat để yêu cầu server gửi danh sách user online
+            var heartbeat = new Packet(PacketType.Heartbeat, _currentUserId, null, null);
+            _tcpService.SendPacket(heartbeat);
         }
 
         #region Packet Handling

@@ -1,0 +1,13 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Build outputs
+bin/
+obj/
+packages/
+
+# Runtime data
+users.json
+ChatHistory/
