@@ -150,7 +150,9 @@ namespace ChatBox.Server.Services
             }
             finally
             {
-                DisconnectClient(connectionId);
+                // Dùng client.UserId thay vì connectionId cũ 
+                // (vì HandleLogin đổi key từ conn_X → userId)
+                DisconnectClient(client.UserId ?? connectionId);
             }
         }
 
@@ -170,6 +172,12 @@ namespace ChatBox.Server.Services
                     break;
 
                 case PacketType.Message:
+                case PacketType.GroupMessage:
+                    // Forward + lưu lịch sử
+                    HandleForward(client, packet);
+                    SaveMessageToStore(client, packet);
+                    break;
+
                 case PacketType.TypingIndicator:
                 case PacketType.FileHeader:
                 case PacketType.FileChunk:
@@ -182,10 +190,8 @@ namespace ChatBox.Server.Services
                 case PacketType.VideoCallEnd:
                 case PacketType.VideoFrame:
                 case PacketType.AudioFrame:
-                case PacketType.GroupMessage:
-                    // Forward đến receiver + lưu lịch sử trên server
+                    // Forward only (không lưu store)
                     HandleForward(client, packet);
-                    SaveMessageToStore(client, packet);
                     break;
 
                 case PacketType.ChatHistoryRequest:
