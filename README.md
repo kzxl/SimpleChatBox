@@ -1,15 +1,16 @@
 # 💬 SimpleChatBox
 
-Ứng dụng Chat thời gian thực với **Server - Multi Client** trên nền Windows Forms C# (.NET Framework 4.8).
+Ứng dụng Chat thời gian thực với **Server - Multi Client** trên nền Windows Forms C# (.NET Framework 4.8).  
+Hỗ trợ **P2P Video Call** qua internet với STUN NAT traversal.
 
 ## ✨ Tính năng
 
 - **Đăng ký / Đăng nhập** — Tài khoản lưu trên server (SHA256 password hash)
 - **Chat 1-1** — Nhắn tin trực tiếp giữa 2 user
 - **Mã hoá End-to-End** — Diffie-Hellman key exchange + AES-256-CBC
-- **Truyền file** — Chunk-based, hỗ trợ mở file sau khi nhận
-- **Video Call** — Signaling qua TCP, popup cửa sổ video (skeleton cho camera capture)
-- **Ghi hình cuộc gọi** — VideoRecorder skeleton (cần tích hợp AForge FFMPEG)
+- **Truyền file** — Chunk-based, lưu vào `Downloads/`, hỏi mở file sau khi nhận
+- **P2P Video Call** — STUN NAT traversal + UDP hole punching, fallback server relay
+- **Ghi hình cuộc gọi** — VideoRecorder (skeleton, cần AForge FFMPEG)
 - **Lịch sử tin nhắn** — Lưu local trên client (JSON per conversation)
 - **Danh sách Online** — Tự động cập nhật khi user login/logout
 - **Disconnect Detection** — Tự kết thúc video call khi đối phương offline
@@ -18,11 +19,12 @@
 
 ```
 ChatBoxSimple.sln
-├── ChatBox.Shared        # Class Library — DTO, Protocol, Crypto, Constants
+├── ChatBox.Shared        # Class Library — DTO, Protocol, Crypto, Network
 │   ├── Constants/        # AppConstants (ports, buffer sizes)
 │   ├── DTOs/             # LoginRequest, LoginResponse, Message, FileTransfer, VideoSignal
 │   ├── Protocol/         # PacketType, Packet, PacketSerializer (length-prefixed TCP)
-│   └── Crypto/           # AesHelper (AES-256-CBC), DiffieHellmanHelper (ECDH)
+│   ├── Crypto/           # AesHelper (AES-256-CBC), DiffieHellmanHelper (ECDH)
+│   └── Network/          # StunClient (RFC 5389 NAT traversal)
 │
 ├── ChatBox.Server        # WinForms App — TCP Server
 │   ├── Data/             # UserStore (JSON file storage)
@@ -31,10 +33,41 @@ ChatBoxSimple.sln
 │   └── Forms/            # frmServer (dashboard)
 │
 └── ChatBox.Client        # WinForms App — TCP Client
-    ├── Services/         # TcpClient, Chat, FileTransfer, FileReceive, VideoCall, MessageHistory
+    ├── Services/         # TcpClient, Chat, FileTransfer, FileReceive,
+    │                     # VideoCall, UdpPeer, MessageHistory
     ├── Helpers/          # VideoRecorder
     └── Forms/            # frmLogin, frmChat, frmVideoCall
 ```
+
+## 📹 Video Call — P2P Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Call Flow                         │
+│                                                     │
+│  Client A          Server          Client B         │
+│     │                │                │              │
+│     ├──STUN──→ Google STUN Server                   │
+│     │    (discover public IP:Port)                   │
+│     │                                               │
+│     ├──Request──→│                │                  │
+│     │            ├──Forward──→    │                  │
+│     │            │          ←──Accept──┤             │
+│     │   ←──Forward──┤                │              │
+│     │                                               │
+│     ├═══════ UDP Hole Punching ═══════┤             │
+│     │    (try public + local endpoint)  │            │
+│     │                                               │
+│     │  ✅ Success → P2P UDP Streaming                │
+│     │  ❌ Fail    → Fallback TCP Relay               │
+└─────────────────────────────────────────────────────┘
+```
+
+| Scenario | Connection Type | Latency |
+|----------|----------------|---------|
+| Cùng LAN | UDP P2P (local IP) | ~1ms |
+| Khác mạng (NAT) | UDP P2P (STUN hole punch) | ~20-50ms |
+| Symmetric NAT / Firewall block | TCP Server Relay (fallback) | ~50-100ms |
 
 ## 🔒 Bảo mật
 
@@ -43,6 +76,7 @@ ChatBoxSimple.sln
 | Password | SHA-256 hash |
 | Key Exchange | ECDH (ECDiffieHellmanCng) |
 | Message Encryption | AES-256-CBC (IV tự động prepend) |
+| NAT Discovery | STUN RFC 5389 (Google STUN servers) |
 
 ## 📡 Protocol
 
@@ -75,6 +109,11 @@ MSBuild.exe ChatBoxSimple.sln /p:Configuration=Debug
 3. **Đăng ký** tài khoản mới → **Đăng nhập**
 4. Chọn user trong danh sách Online → **Chat / Gửi file / Video Call**
 
+### Chạy qua Internet
+1. Server cần **mở port 9000** trên router (port forwarding)
+2. Client nhập **IP public** của server khi đăng nhập
+3. Video call tự động dùng **STUN** để kết nối P2P qua NAT
+
 ## 📁 Cấu trúc dữ liệu
 
 | File | Vị trí | Mô tả |
@@ -88,14 +127,14 @@ MSBuild.exe ChatBoxSimple.sln /p:Configuration=Debug
 
 - **Framework**: .NET Framework 4.8
 - **UI**: Windows Forms
-- **Network**: `System.Net.Sockets` (TCP)
+- **Network**: `System.Net.Sockets` (TCP + UDP)
+- **NAT Traversal**: STUN (RFC 5389) + UDP Hole Punching
 - **Crypto**: `System.Security.Cryptography` (AES, ECDH, SHA256)
 - **Pattern**: Interface-first Services, DTO-based communication
 
 ## 📋 Roadmap
 
 - [ ] Tích hợp AForge.Video.DirectShow cho camera capture
-- [ ] UDP video/audio streaming
 - [ ] NAudio cho audio capture
 - [ ] Group chat
 - [ ] Emoji & rich text
@@ -103,4 +142,4 @@ MSBuild.exe ChatBoxSimple.sln /p:Configuration=Debug
 
 ## 📄 License
 
-MIT
+MIT — Xem file [LICENSE](LICENSE)
