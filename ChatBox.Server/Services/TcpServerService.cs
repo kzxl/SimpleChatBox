@@ -1,0 +1,341 @@
+using System;
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+using ChatBox.Server.Data;
+using ChatBox.Server.Models;
+using ChatBox.Shared.Constants;
+using ChatBox.Shared.DTOs;
+using ChatBox.Shared.Protocol;
+
+namespace ChatBox.Server.Services
+{
+    /// <summary>
+    /// TCP Server xử lý nhiều client đồng thời.
+    /// Mỗi client kết nối → chạy trong Task riêng (async).
+    /// </summary>
+    public class TcpServerService : ITcpServerService
+    {
+        private TcpListener _listener;
+        private CancellationTokenSource _cts;
+        private readonly ConcurrentDictionary<string, ConnectedClient> _clients;
+        private readonly AuthService _authService;
+        private readonly MessageRouter _messageRouter;
+        private int _connectionCounter;
+
+        public bool IsRunning { get; private set; }
+        public int ConnectedCount => _clients.Count;
+
+        public event Action<string> OnLog;
+        public event Action OnClientListChanged;
+
+        public TcpServerService(UserStore userStore)
+        {
+            _clients = new ConcurrentDictionary<string, ConnectedClient>();
+            _authService = new AuthService(userStore);
+            _messageRouter = new MessageRouter(_clients, msg => OnLog?.Invoke(msg));
+        }
+
+        /// <summary>
+        /// Khởi động server trên port chỉ định
+        /// </summary>
+        public void Start(int port)
+        {
+            if (IsRunning) return;
+
+            _cts = new CancellationTokenSource();
+            _listener = new TcpListener(IPAddress.Any, port);
+            _listener.Start();
+            IsRunning = true;
+
+            Log($"Server đã khởi động trên port {port}");
+
+            // Accept connections trong background
+            Task.Run(() => AcceptClientsAsync(_cts.Token));
+        }
+
+        /// <summary>
+        /// Dừng server và ngắt tất cả client
+        /// </summary>
+        public void Stop()
+        {
+            if (!IsRunning) return;
+
+            _cts?.Cancel();
+            IsRunning = false;
+
+            // Ngắt tất cả client
+            foreach (var kvp in _clients)
+            {
+                try
+                {
+                    kvp.Value.TcpClient?.Close();
+                }
+                catch { }
+            }
+            _clients.Clear();
+
+            try
+            {
+                _listener?.Stop();
+            }
+            catch { }
+
+            Log("Server đã dừng");
+            OnClientListChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Vòng lặp accept client mới
+        /// </summary>
+        private async Task AcceptClientsAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    var tcpClient = await _listener.AcceptTcpClientAsync();
+                    var connectionId = "conn_" + Interlocked.Increment(ref _connectionCounter);
+
+                    var client = new ConnectedClient
+                    {
+                        TcpClient = tcpClient,
+                        Stream = tcpClient.GetStream(),
+                        UserId = connectionId
+                    };
+
+                    _clients.TryAdd(connectionId, client);
+                    Log($"[CONNECT] Client mới: {client.EndPoint} (ID: {connectionId})");
+                    OnClientListChanged?.Invoke();
+
+                    // Xử lý client trong Task riêng
+                    var _ = Task.Run(() => HandleClientAsync(connectionId, client, ct));
+                }
+                catch (ObjectDisposedException)
+                {
+                    break; // Server stopped
+                }
+                catch (Exception ex)
+                {
+                    if (!ct.IsCancellationRequested)
+                        Log($"[ERROR] Accept failed: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Xử lý 1 client: đọc packet và route
+        /// </summary>
+        private async Task HandleClientAsync(string connectionId, ConnectedClient client, CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested && client.TcpClient.Connected)
+                {
+                    var packet = await Task.Run(() => PacketSerializer.ReceivePacket(client.Stream));
+                    if (packet == null)
+                        break; // Client disconnected
+
+                    ProcessPacket(connectionId, client, packet);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!ct.IsCancellationRequested)
+                    Log($"[ERROR] Client {connectionId}: {ex.Message}");
+            }
+            finally
+            {
+                DisconnectClient(connectionId);
+            }
+        }
+
+        /// <summary>
+        /// Xử lý packet nhận được từ client
+        /// </summary>
+        private void ProcessPacket(string connectionId, ConnectedClient client, Packet packet)
+        {
+            switch (packet.Type)
+            {
+                case PacketType.Login:
+                    HandleLogin(connectionId, client, packet);
+                    break;
+
+                case PacketType.Register:
+                    HandleRegister(connectionId, client, packet);
+                    break;
+
+                case PacketType.Message:
+                case PacketType.FileHeader:
+                case PacketType.FileChunk:
+                case PacketType.FileComplete:
+                case PacketType.KeyExchange:
+                case PacketType.KeyExchangeResponse:
+                case PacketType.VideoCallRequest:
+                case PacketType.VideoCallAccept:
+                case PacketType.VideoCallReject:
+                case PacketType.VideoCallEnd:
+                case PacketType.VideoFrame:
+                case PacketType.AudioFrame:
+                    // Forward đến receiver
+                    HandleForward(client, packet);
+                    break;
+
+                case PacketType.Disconnect:
+                    DisconnectClient(connectionId);
+                    break;
+
+                default:
+                    Log($"[WARN] Unknown packet type: {packet.Type} from {connectionId}");
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Xử lý đăng nhập
+        /// </summary>
+        private void HandleLogin(string connectionId, ConnectedClient client, Packet packet)
+        {
+            // Parse LoginRequestDTO từ Data
+            var request = new LoginRequestDTO
+            {
+                Username = GetJsonField(packet.Data, "Username"),
+                PasswordHash = GetJsonField(packet.Data, "PasswordHash")
+            };
+
+            var response = _authService.Authenticate(request);
+
+            if (response.Success)
+            {
+                // Update client info
+                ConnectedClient removed;
+                _clients.TryRemove(connectionId, out removed);
+
+                client.UserId = response.UserId;
+                client.Username = request.Username;
+                client.DisplayName = response.DisplayName;
+                client.IsAuthenticated = true;
+
+                _clients.TryAdd(response.UserId, client);
+
+                Log($"[LOGIN] {request.Username} đăng nhập thành công (ID: {response.UserId})");
+            }
+            else
+            {
+                Log($"[LOGIN FAILED] {request.Username}: {response.Message}");
+            }
+
+            // Gửi response về client
+            var responseData = string.Format(
+                "{{\"Success\":{0},\"Message\":\"{1}\",\"UserId\":\"{2}\",\"DisplayName\":\"{3}\"}}",
+                response.Success.ToString().ToLower(),
+                response.Message ?? "",
+                response.UserId ?? "",
+                response.DisplayName ?? "");
+
+            var responsePacket = new Packet(PacketType.LoginResponse, "server", connectionId, responseData);
+            PacketSerializer.SendPacket(client.Stream, responsePacket);
+
+            if (response.Success)
+            {
+                // Broadcast user list update
+                _messageRouter.BroadcastUserList();
+                OnClientListChanged?.Invoke();
+            }
+        }
+
+        /// <summary>
+        /// Xử lý đăng ký
+        /// </summary>
+        private void HandleRegister(string connectionId, ConnectedClient client, Packet packet)
+        {
+            var request = new LoginRequestDTO
+            {
+                Username = GetJsonField(packet.Data, "Username"),
+                PasswordHash = GetJsonField(packet.Data, "PasswordHash")
+            };
+
+            var response = _authService.Register(request);
+
+            var responseData = string.Format(
+                "{{\"Success\":{0},\"Message\":\"{1}\",\"UserId\":\"{2}\",\"DisplayName\":\"{3}\"}}",
+                response.Success.ToString().ToLower(),
+                response.Message ?? "",
+                response.UserId ?? "",
+                response.DisplayName ?? "");
+
+            var responsePacket = new Packet(PacketType.RegisterResponse, "server", connectionId, responseData);
+            PacketSerializer.SendPacket(client.Stream, responsePacket);
+
+            Log($"[REGISTER] {request.Username}: {response.Message}");
+        }
+
+        /// <summary>
+        /// Forward packet từ sender đến receiver
+        /// </summary>
+        private void HandleForward(ConnectedClient sender, Packet packet)
+        {
+            if (!sender.IsAuthenticated)
+            {
+                Log($"[WARN] Unauthenticated client tried to send {packet.Type}");
+                return;
+            }
+
+            // Set sender info
+            packet.SenderId = sender.UserId;
+
+            if (string.IsNullOrEmpty(packet.ReceiverId))
+            {
+                // Broadcast
+                _messageRouter.Broadcast(packet, sender.UserId);
+            }
+            else
+            {
+                // Point-to-point
+                _messageRouter.SendToClient(packet.ReceiverId, packet);
+            }
+        }
+
+        /// <summary>
+        /// Ngắt kết nối client
+        /// </summary>
+        private void DisconnectClient(string connectionId)
+        {
+            ConnectedClient client;
+            if (_clients.TryRemove(connectionId, out client))
+            {
+                try { client.TcpClient?.Close(); } catch { }
+
+                Log($"[DISCONNECT] {client.Username ?? connectionId} đã ngắt kết nối");
+
+                if (client.IsAuthenticated)
+                {
+                    _messageRouter.BroadcastUserList();
+                }
+
+                OnClientListChanged?.Invoke();
+            }
+        }
+
+        private void Log(string message)
+        {
+            OnLog?.Invoke($"[{DateTime.Now:HH:mm:ss}] {message}");
+        }
+
+        /// <summary>Simple helper lấy field từ JSON string</summary>
+        private string GetJsonField(string json, string field)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+
+            var search = "\"" + field + "\":\"";
+            int idx = json.IndexOf(search, StringComparison.Ordinal);
+            if (idx < 0) return null;
+
+            idx += search.Length;
+            int end = json.IndexOf('"', idx);
+            return end < 0 ? null : json.Substring(idx, end - idx);
+        }
+    }
+}
