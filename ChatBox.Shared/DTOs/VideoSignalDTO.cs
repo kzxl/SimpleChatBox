@@ -3,19 +3,30 @@ using System;
 namespace ChatBox.Shared.DTOs
 {
     /// <summary>
-    /// DTO cho tín hiệu video call (signaling)
+    /// DTO cho signaling video call.
+    /// Chứa cả endpoint info cho P2P UDP connection.
     /// </summary>
-    [Serializable]
     public class VideoSignalDTO
     {
-        /// <summary>Loại tín hiệu: Request, Accept, Reject, End</summary>
+        /// <summary>Loại signal: Request, Accept, Reject, End</summary>
         public string SignalType { get; set; }
 
-        /// <summary>Địa chỉ IP của caller (để kết nối UDP trực tiếp)</summary>
-        public string CallerIp { get; set; }
+        // === P2P Endpoint Info ===
 
-        /// <summary>Port UDP của caller</summary>
-        public int CallerUdpPort { get; set; }
+        /// <summary>Local IP (LAN)</summary>
+        public string LocalIp { get; set; }
+
+        /// <summary>Local UDP port</summary>
+        public int LocalPort { get; set; }
+
+        /// <summary>Public IP (từ STUN)</summary>
+        public string PublicIp { get; set; }
+
+        /// <summary>Public UDP port (từ STUN)</summary>
+        public int PublicPort { get; set; }
+
+        /// <summary>True nếu phải dùng server relay (P2P fail)</summary>
+        public bool UseRelay { get; set; }
 
         /// <summary>Thời gian bắt đầu cuộc gọi</summary>
         public DateTime CallStartTime { get; set; }
